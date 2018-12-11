@@ -8,6 +8,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import argparse, sys, os
 
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import pairwise_distances
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,68 +55,6 @@ def fgsm_attack(image, epsilon, data_grad):
     # Return the perturbed image
     return perturbed_image
 
-'''
-def test( model, device, test_loader, epsilon ):
-    # Accuracy counter
-    correct = 0
-    adv_examples = []
-
-    # Loop over all examples in test set
-    for data, target in test_loader:
-
-        # Send the data and label to the device
-        data, target = data.to(device), target.to(device)
-
-        # Set requires_grad attribute of tensor. Important for Attack
-        data.requires_grad = True
-
-        # Forward pass the data through the model
-        output = model(data)
-        init_pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
-
-        # If the initial prediction is wrong, dont bother attacking, just move on
-        if init_pred.item() != target.item():
-            continue
-
-        # Calculate the loss
-        loss = F.nll_loss(output, target)
-
-        # Zero all existing gradients
-        model.zero_grad()
-
-        # Calculate gradients of model in backward pass
-        loss.backward()
-
-        # Collect datagrad
-        data_grad = data.grad.data
-
-        # Call FGSM Attack
-        perturbed_data = fgsm_attack(data, epsilon, data_grad)
-
-        # Re-classify the perturbed image
-        output = model(perturbed_data)
-
-        # Check for success
-        final_pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
-        if final_pred.item() == target.item():
-            correct += 1
-            # Special case for saving 0 epsilon examples
-            if (epsilon == 0) and (len(adv_examples) < 5):
-                adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
-                adv_examples.append( (init_pred.item(), final_pred.item(), adv_ex) )
-        else:
-            # Save some adv examples for visualization later
-            if len(adv_examples) < 5:
-                adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
-                adv_examples.append( (init_pred.item(), final_pred.item(), adv_ex) )
-
-    # Calculate final accuracy for this epsilon
-    final_acc = correct/float(len(test_loader))
-    print("Epsilon: {}\tTest Accuracy = {} / {} = {}".format(epsilon, correct, len(test_loader), final_acc))
-
-    # Return the accuracy and an adversarial example
-    return final_acc, adv_examples
-'''
 
 
 class TripletInfer(object): # TODO
@@ -137,6 +76,7 @@ class TripletInfer(object): # TODO
         y = self.knn.predict(embed)
         prob = self.knn.predict_proba(embed)
         return y, prob
+
 
 
 epsilons = [0, .05, .1, .15, .2, .25, .3]
@@ -165,16 +105,27 @@ def gen_hard(ti, data_loader, cls=None, n_examples=None, target_cls=None):
     for data, target in data_loader:
         pred_label, pred_conf = ti.model(*data)
 
-
         if pred_label == target and np.maximum(pred_conf) < 1: # positive examples
             if cls is not None and target == cls: # for a specific class
                 if target_cls is not None and pred_conf[target_cls] > 0: # convert to another specific class
                     hard_examples.append((data, pred_conf))
 
-
     hard_examples.sort(key=lambda tup:tup[1])
 
     return hard_examples[:n_examples]
+
+
+
+def loader2numpy(loader):
+    images, labels = [], []
+    for data, target in loader:
+        images.append(data)
+        labels.append(target)
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels)
+    return images, labels
+
 
 
 def test(args):
@@ -200,33 +151,24 @@ def test(args):
     triplet_test_dataset = TripletMNIST(test_dataset)
 
     # kNN training
-    images, labels = [], []
-    for data, target in train_loader:
-        images.append(data)
-        labels.append(target)
-
-    images = np.concatenate(images)
-    labels = np.concatenate(labels)
+    train_images, train_labels = loader2numpy(train_loader)
     model = torch.load('./triplet.pt')
-    ti = TripletInfer(model, images, labels)
+    ti = TripletInfer(model, train_images, train_labels)
 
-    '''
-    # kNN inference data preparation
-    y_pred, y_true = [], []
+    # Load test dataset.
+    test_images, test_labels = loader2numpy(test_loader)
 
-    for data, target in test_loader:
-        y_pred.append(data) # Save predictions' confidence only.
-        y_true.append(target.numpy())
+    # Get embeddings from training and test.
+    train_embed, test_embed = ti.model.get_embedding(torch.from_numpy(train_images)), \
+                              ti.model.get_embedding(torch.from_numpy(test_images))
+    n_train, n_test = train_images.shape[0], test_images.shape[0]
 
-    print(accuracy_score(np.concatenate(y_true), np.concatenate(y_pred)))
-    '''
+    # Construct distance matrix.
+    X = np.concatenate((train_embed.detach().numpy(),
+                        test_embed.detach().numpy()))
 
-    # Accuracy counter2
-    correct = 0
-    adv_examples = []
-    losses = []
+    dis_mat = pairwise_distances(X)
 
-    # Loop over all examples in test set
     ''' 
     TODO: fabricate an adversarial attack.
     1. [x] Triplet loss is different from softmax loss. Perform correct loss.
