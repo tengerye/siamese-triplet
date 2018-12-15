@@ -16,14 +16,16 @@ from torchvision.datasets import MNIST
 from torchvision import transforms
 from torch.optim import lr_scheduler
 import torch.optim as optim
+import matplotlib.pyplot as plt
+import numpy as np
 
 from datasets import TripletMNIST
 from losses import TripletLoss
 from networks import EmbeddingNet, TripletNet
-import numpy as np
 import params
 from sklearn.metrics import accuracy_score
 from trainer import test_epoch
+
 
 
 __author__ = "TengQi Ye"
@@ -49,7 +51,7 @@ def fgsm_attack(image, epsilon, data_grad):
     sign_data_grad = data_grad.sign()
     # Create the perturbed image by adjusting each pixel of the input image
     # perturbed_image = image + epsilon*sign_data_grad
-    perturbed_image = image + epsilon * torch.rand(sign_data_grad.shape).cuda()
+    perturbed_image = image + epsilon * torch.rand(sign_data_grad.shape)
     # Adding clipping to maintain [0,1] range
     perturbed_image = torch.clamp(perturbed_image, 0, 1)
     # Return the perturbed image
@@ -89,13 +91,14 @@ def parse_arguments(argv):
     """Command line parse."""
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data_path', type=str, default='../data/MNIST', help='The path to MNIST dataset.')
+    parser.add_argument('--data_path', type=str, default='/home/tenger/research/metric-learning/data/MNIST', help='The path to MNIST dataset.')
 
     return parser.parse_args()
 
 
 
 cuda = torch.cuda.is_available()
+
 
 
 def gen_hard(ti, data_loader, cls=None, n_examples=None, target_cls=None):
@@ -110,7 +113,7 @@ def gen_hard(ti, data_loader, cls=None, n_examples=None, target_cls=None):
                 if target_cls is not None and pred_conf[target_cls] > 0: # convert to another specific class
                     hard_examples.append((data, pred_conf))
 
-    hard_examples.sort(key=lambda tup:tup[1])
+    hard_examples.sort(key=lambda tup:tup[1])    
 
     return hard_examples[:n_examples]
 
@@ -125,6 +128,14 @@ def loader2numpy(loader):
     images = np.concatenate(images)
     labels = np.concatenate(labels)
     return images, labels
+
+
+
+def imshow(img):
+    npimg = img.detach().numpy()
+    npimg = np.squeeze(npimg)
+    plt.imshow(npimg)
+    plt.show()
 
 
 
@@ -147,12 +158,9 @@ def test(args):
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=params.batch_size,
                                               shuffle=False, **kwargs)
 
-    triplet_train_dataset = TripletMNIST(train_dataset)  # Returns triplets of images
-    triplet_test_dataset = TripletMNIST(test_dataset)
-
     # kNN training
     train_images, train_labels = loader2numpy(train_loader)
-    model = torch.load('./triplet.pt')
+    model = torch.load('/home/tenger/research/metric-learning/siamese-triplet/triplet.pt')
     ti = TripletInfer(model, train_images, train_labels)
 
     # Load test dataset.
@@ -164,10 +172,59 @@ def test(args):
     n_train, n_test = train_images.shape[0], test_images.shape[0]
 
     # Construct distance matrix.
-    X = np.concatenate((train_embed.detach().numpy(),
+    dis_mat = pairwise_distances(np.concatenate((train_embed.detach().numpy(),
                         test_embed.detach().numpy()))
+                                 )
 
-    dis_mat = pairwise_distances(X)
+    hard_examples = []
+    k=3
+    loss_fn = TripletLoss(params.margin)
+
+    for row_idx in range(n_train, n_train+n_test):
+        row = dis_mat[row_idx, :n_train]
+
+        # nearest neighbors and corresponding confidences
+        nn_indices = row.argsort()[:k]
+        nn_labels = train_labels[nn_indices]
+        confidence = max(np.bincount(nn_labels))/k
+
+        # Hard, positive examples.
+        if np.argmax(np.bincount(nn_labels)) == test_labels[row_idx-n_train] \
+                and confidence < 1:
+
+            # hard_examples.append(row_idx)
+            # Find the furthest example that is the same class as the hard example.
+            indices = np.where(train_labels==test_labels[row_idx-n_train])
+            fur_pos_idx = indices[0][np.argmax(row[indices])] # furthest example
+
+            # Find nearest the negative example.
+            neg_indices = nn_indices[np.where(nn_labels!=test_labels[row_idx-n_train])]
+            neg_idx = neg_indices[np.argmin(row[neg_indices])]
+
+            # Calculate the triplet loss.
+            anchor_image = torch.from_numpy(test_images[row_idx-n_train])
+            anchor_image.requires_grad = True
+            anchor = ti.model.get_embedding(anchor_image.unsqueeze(0))
+
+            loss = loss_fn(anchor,
+                    train_embed[fur_pos_idx].unsqueeze(0),
+                    train_embed[neg_idx].unsqueeze(0)
+                    )
+
+            # back-propagation
+            ti.model.zero_grad()
+            loss.backward(retain_graph=True)
+
+            data_grad = anchor_image.grad.data
+
+            # Call FGSM Attack
+            perturbed_data = fgsm_attack(anchor_image, params.epsilon, data_grad)  # TODO: multiple epsilons
+
+            imshow(perturbed_data)
+            # Re-classify the perturbed image
+            print(ti(perturbed_data.unsqueeze(0)), test_labels[row_idx-n_train],
+                  ti(anchor_image.unsqueeze(0)))
+
 
     ''' 
     TODO: fabricate an adversarial attack.
@@ -176,7 +233,10 @@ def test(args):
     3. [ ] Exceptional case: (adversarial examples can be ordered).
     4. [ ] Show test result and sample some successful and failed adversarial examples.
     '''
+
+ 
     hard_examples = gen_hard(ti, test_loader, cls=None, n_examples=None, target_cls=None)
+
 
     for data, target in hard_examples:
 
