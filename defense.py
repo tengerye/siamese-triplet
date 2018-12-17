@@ -9,6 +9,7 @@ import argparse, sys, os
 
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import pairwise_distances
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -134,7 +135,7 @@ def loader2numpy(loader):
 def imshow(img):
     npimg = img.detach().numpy()
     npimg = np.squeeze(npimg)
-    plt.imshow(npimg)
+    plt.imshow(npimg, cmap='gray')
     plt.show()
 
 
@@ -180,6 +181,7 @@ def test(args):
     k=3
     loss_fn = TripletLoss(params.margin)
 
+    cnt = 0
     for row_idx in range(n_train, n_train+n_test):
         row = dis_mat[row_idx, :n_train]
 
@@ -213,17 +215,28 @@ def test(args):
 
             # back-propagation
             ti.model.zero_grad()
+
+            since = time.time()
             loss.backward(retain_graph=True)
+            print('Cost =', time.time() - since)
 
             data_grad = anchor_image.grad.data
 
             # Call FGSM Attack
             perturbed_data = fgsm_attack(anchor_image, params.epsilon, data_grad)  # TODO: multiple epsilons
 
+            # plot origin, added noise and sythetic image.
+            imshow(anchor_image)
+            imshow(params.epsilon * data_grad)
             imshow(perturbed_data)
+
             # Re-classify the perturbed image
             print(ti(perturbed_data.unsqueeze(0)), test_labels[row_idx-n_train],
                   ti(anchor_image.unsqueeze(0)))
+
+            cnt += 1
+            if cnt == 30:
+                break
 
 
     ''' 
@@ -233,54 +246,6 @@ def test(args):
     3. [ ] Exceptional case: (adversarial examples can be ordered).
     4. [ ] Show test result and sample some successful and failed adversarial examples.
     '''
-
- 
-    hard_examples = gen_hard(ti, test_loader, cls=None, n_examples=None, target_cls=None)
-
-
-    for data, target in hard_examples:
-
-        if cuda:
-            data = tuple(d.unsqueeze(0).cuda() for d in data)
-            data[0].requires_grad = True
-
-        optimizer = optim.Adam(ti.model.parameters(), lr=params.lr)
-        optimizer.zero_grad()
-        ti.model.cuda()
-        outputs = ti.model(*data)
-
-        if type(outputs) not in (tuple, list):
-            outputs = (outputs,)
-
-        loss_inputs = outputs
-        if target is not None:
-            target = (target,)
-            loss_inputs += target
-
-        loss_fn = TripletLoss(params.margin)
-        loss_outputs = loss_fn(*loss_inputs)
-        loss = loss_outputs[0] if type(loss_outputs) in (tuple, list) else loss_outputs
-
-        # Calculate the loss
-        if loss.item() != 0:
-            # loss = F.nll_loss(outputs, target)
-
-            # Zero all existing gradients
-            ti.model.zero_grad()
-
-            # Calculate gradients of model in backward pass
-            loss.backward()
-
-            # Collect datagrad
-            data_grad = data[0].grad.data
-
-            # Call FGSM Attack
-            perturbed_data = fgsm_attack(data[0], params.epsilon, data_grad) # TODO: multiple epsilons
-
-            # Re-classify the perturbed image
-            print(ti(perturbed_data))
-
-            break
 
 
 

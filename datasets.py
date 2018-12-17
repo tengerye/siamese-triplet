@@ -115,6 +115,8 @@ class TripletMNIST(Dataset):
                         for i in range(len(self.test_data))]
             self.test_triplets = triplets
 
+    '''
+    ### original:
     def __getitem__(self, index):
         if self.train:
             img1, label1 = self.train_data[index], self.train_labels[index].item()
@@ -137,7 +139,43 @@ class TripletMNIST(Dataset):
             img1 = self.transform(img1)
             img2 = self.transform(img2)
             img3 = self.transform(img3)
+
         return (img1, img2, img3), []
+    '''
+
+    ### modified
+    def __getitem__(self, index):
+
+        if self.train:
+            img1, label1 = self.train_data[index], self.train_labels[index].item()
+            positive_index = index
+            while positive_index == index:
+                positive_index = np.random.choice(self.label_to_indices[label1])
+            negative_label = np.random.choice(list(self.labels_set - set([label1])))
+            negative_index = np.random.choice(self.label_to_indices[negative_label])
+            img2 = self.train_data[positive_index]
+            img3 = self.train_data[negative_index]
+        else:
+            img1, label1 = self.test_data[index], self.test_labels[index].item()
+            positive_index = index
+            while positive_index == index:
+                positive_index = np.random.choice(self.label_to_indices[label1])
+            negative_label = np.random.choice(list(self.labels_set - set([label1])))
+            negative_index = np.random.choice(self.label_to_indices[negative_label])
+            img2 = self.test_data[positive_index]
+            img3 = self.test_data[negative_index]
+
+        img1 = Image.fromarray(img1.numpy(), mode='L')
+        img2 = Image.fromarray(img2.numpy(), mode='L')
+        img3 = Image.fromarray(img3.numpy(), mode='L')
+
+        if self.transform is not None:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+            img3 = self.transform(img3)
+
+        return (img1, img2, img3), []
+
 
     def __len__(self):
         return len(self.mnist_dataset)
