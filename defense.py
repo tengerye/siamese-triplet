@@ -92,7 +92,8 @@ def parse_arguments(argv):
     """Command line parse."""
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data_path', type=str, default='/home/tenger/research/metric-learning/data/MNIST', help='The path to MNIST dataset.')
+    parser.add_argument('--data_path', type=str, default='/home/tenger/research/metric-learning/data/MNIST',
+                        help='The path to MNIST dataset.')
 
     return parser.parse_args()
 
@@ -242,7 +243,7 @@ def test(args):
     ''' 
     TODO: fabricate an adversarial attack.
     1. [x] Triplet loss is different from softmax loss. Perform correct loss.
-    2. [ ] Perform correct gradient and generate corresponding adversarial examples with labels.
+    2. [x] Perform correct gradient and generate corresponding adversarial examples with labels.
     3. [ ] Exceptional case: (adversarial examples can be ordered).
     4. [ ] Show test result and sample some successful and failed adversarial examples.
     '''
