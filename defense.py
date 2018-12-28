@@ -235,6 +235,8 @@ def test(args):
             print(ti(perturbed_data.unsqueeze(0)), test_labels[row_idx-n_train],
                   ti(anchor_image.unsqueeze(0)))
 
+            anchor_image.detach()
+
             cnt += 1
             if cnt == 30:
                 break
