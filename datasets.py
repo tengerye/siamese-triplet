@@ -1,9 +1,13 @@
+import os
+
 import numpy as np
 from PIL import Image
-
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import BatchSampler
 
+import params
 
 class SiameseMNIST(Dataset):
     """
@@ -224,3 +228,54 @@ class BalancedBatchSampler(BatchSampler):
 
     def __len__(self):
         return len(self.dataset) // self.batch_size
+
+
+
+class TripletBaB(Dataset):
+    # TODO: read from birds and bycicle dataset.
+    """Bird and Bycicle dataset."""
+    def __init__(self, root_dir, train=True, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.train = train
+
+        # dataset hold for all train and test
+        if self.train:
+            self.dataset = ImageFolder(
+                os.path.join(root_dir, 'train')
+            )
+
+        else:
+            self.dataset = ImageFolder(
+                os.path.join(root_dir, 'test')
+            )
+
+        # We have to extract all the data from dataset.
+        self.dataset = [batch for batch in self.dataset]
+        self.labels = [label for _, label in self.dataset]
+        self.labels_set = set(self.labels)
+        self.label_to_indices = {label: np.where(np.asarray(self.labels) == label)[0] #self.labels.numpy() == label
+                                 for label in self.labels_set}
+
+
+
+    def __getitem__(self, index):
+
+        img1, label1 = self.dataset[index]
+
+        positive_index = np.random.choice(self.label_to_indices[label1])
+        negative_label = np.random.choice(list(self.labels_set - set([label1])))
+        negative_index = np.random.choice(self.label_to_indices[negative_label])
+        img2 = self.dataset[positive_index][0]
+        img3 = self.dataset[negative_index][0]
+
+        if self.transform is not None:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+            img3 = self.transform(img3)
+
+        return (img1, img2, img3), (label1, label1, negative_label)
+
+
+    def __len__(self):
+        return len(self.dataset)

@@ -11,11 +11,13 @@ colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
 
 n_classes = 10
 batch_size = 256
-n_epochs = 20
-log_interval = 50
+n_epochs = 200
+log_interval = 10
 lr = 1e-2
 
 margin = 1.0
 epsilon = 0.05
 
 epsilons = [0, 5, 10, 20, 40, 60, 80]#[0, .05, .1, .15, .2, .25, .3]
+
+data_root = '/home/tenger/datasets/bird_or_bicycle/0.0.4/'

@@ -6,15 +6,16 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import argparse, sys, os
+import pickle
 
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import pairwise_distances
-from sklearn.model_selection import cross_val_score
+from sklearn.metrics import accuracy_score, pairwise_distances
+from sklearn.model_selection import cross_val_score, train_test_split
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.datasets import MNIST
+from torchvision.datasets import MNIST, ImageFolder
 from torchvision import transforms
 from torch.optim import lr_scheduler
 import torch.optim as optim
@@ -63,13 +64,19 @@ def fgsm_attack(image, epsilon, data_grad):
 
 class TripletInfer(object): # TODO
     """Inference using kNN"""
-    def __init__(self, model, x, y):
-
-        self.model = TripletNet(EmbeddingNet())
-        self.model.load_state_dict(model)
+    def __init__(self, net, x, y):
+        """embedding_net is an object of nn.Module"""
+        if isinstance(net, TripletNet):
+            self.model = net
+        else:
+            self.model = TripletNet(net)
         self.model.eval()
 
         # TODO: check training_set shape and type
+        # if next(self.model.parameters()).is_cuda:
+        #     self.train_x = self.model.get_embedding(torch.from_numpy(x).cuda())
+        # else:
+        self.model.cpu()
         self.train_x = self.model.get_embedding(torch.from_numpy(x))
 
         # cross validation to determine the best k
@@ -82,10 +89,24 @@ class TripletInfer(object): # TODO
         self.k = self.k_candidates[np.argmax(scores)] # k of knn
         self.knn.fit(self.train_x.detach().numpy(), y)
 
+
     def __call__(self, x):
+
+        try:
+            if not isinstance(x, torch.Tensor):
+                x = torch.from_numpy(x).cuda()
+            elif not x.is_cuda:
+                x.cuda()
+
+            self.model.cuda()
+        except:
+            self.model.cpu()
+            x.cpu()
+
         embed = self.model.get_embedding(x).cpu().detach().numpy()
         y = self.knn.predict(embed)
         prob = self.knn.predict_proba(embed)
+
         return y, prob
 
 
@@ -148,102 +169,47 @@ def imshow(img):
     plt.show()
 
 
-
-def normal_attack(args):
-    '''
-    TODO: fabricate an adversarial attack.
-    1. [x] Triplet loss is different from softmax loss. Perform correct loss.
-    2. [x] Perform correct gradient and generate corresponding adversarial examples with labels.
-    3. [ ] Exceptional case: (adversarial examples can be ordered).
-    4. [ ] Show test result and sample some successful and failed adversarial examples.
-    '''
-    device = torch.device("cuda" if (use_cuda and torch.cuda.is_available()) else "cpu")
-
+def defense(dataset, nn_model_path):
     # Prepare dataset.
-    train_dataset = MNIST(args.data_path, train=True, download=True,
-                          transform=transforms.Compose([
-                              transforms.ToTensor(),
-                              transforms.Normalize((params.mean,), (params.std,))
-                          ]))
-    test_dataset = MNIST(args.data_path, train=False, download=True,
-                         transform=transforms.Compose([
-                             transforms.ToTensor(),
-                             transforms.Normalize((params.mean,), (params.std,))
-                         ]))
-
     kwargs = {'num_workers': 1, 'pin_memory': True} if cuda else {}
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=params.batch_size,
-                                               shuffle=True, **kwargs)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1,
-                                              shuffle=False, **kwargs)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=params.batch_size,
+                                         shuffle=True, **kwargs)
 
-    # kNN training
-    train_images, train_labels = loader2numpy(train_loader)
-    model = torch.load('/home/tenger/research/metric-learning/siamese-triplet/triplet.pt')
+    images, labels = loader2numpy(loader)
+    train_images, test_images, train_labels, test_labels = train_test_split(
+        images, labels, test_size=0.33, random_state=42
+    )
+
+    # kNN training.
+    model = torch.load(nn_model_path)
+    model.eval()
     ti = TripletInfer(model, train_images, train_labels)
 
-    # Accuracy counter
-    correct = 0
-    adv_examples = []
+    # Save model.
+    print('accuracy:')
+    del images, labels, train_images, train_labels, dataset # Delete unnecessary variables.
 
-    # Loop over all examples in test set
-    for data, target in test_loader:
+    # Calculate result batch by batch.
+    test_batch_size, batch_idx = 100, 0
+    predict_array = []
 
-        # Send the data and label to the device
-        data, target = data.to(device), target.to(device)
+    while batch_idx + test_batch_size < len(test_labels):
+        predict_array.append(ti(torch.from_numpy(
+            test_images[batch_idx: batch_idx+test_batch_size, :,:,:]))[0])
+        batch_idx += test_batch_size
 
-        # Set requires_grad attribute of tensor. Important for Attack
-        data.requires_grad = True
+    predict_array.append(ti(torch.from_numpy(test_images[batch_idx:, :,:,:]))[0])
+    predict_array = np.concatenate(predict_array)
 
-        # Forward pass the data through the model
-        output, _ = ti(data)
+    print(accuracy_score(test_labels, predict_array))
 
-        # If the initial prediction is wrong, dont bother attacking, just move on
-        if output[0].item() != target.item():
-            continue
-
-        # Calculate the loss
-        loss = F.nll_loss(torch.from_numpy(np.expand_dims(output, axis=0)), target)
-
-        # Zero all existing gradients
-        model.zero_grad()
-
-        # Calculate gradients of model in backward pass
-        loss.backward()
-
-        # Collect datagrad
-        data_grad = data.grad.data
-
-        # Call FGSM Attack
-        perturbed_data = fgsm_attack(data, params.epsilon, data_grad)
-
-        # Re-classify the perturbed image
-        output = ti(perturbed_data)
-
-        # Check for success
-        final_pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
-        if final_pred.item() == target.item():
-            correct += 1
-            # Special case for saving 0 epsilon examples
-            if (params.epsilon == 0) and (len(adv_examples) < 5):
-                adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
-                adv_examples.append( (init_pred.item(), final_pred.item(), adv_ex) )
-        else:
-            # Save some adv examples for visualization later
-            if len(adv_examples) < 5:
-                adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
-                adv_examples.append( (init_pred.item(), final_pred.item(), adv_ex) )
-
-    # Calculate final accuracy for this epsilon
-    final_acc = correct/float(len(test_loader))
-    print("Epsilon: {}\tTest Accuracy = {} / {} = {}".format(params.epsilon, correct, len(test_loader), final_acc))
-
-    # Return the accuracy and an adversarial example
-    return final_acc, adv_examples
+    # Save the model.
+    with open('ti_infer_bb.pkl', 'wb') as output:
+        pickle.dump(ti, output, pickle.HIGHEST_PROTOCOL)
 
 
-
-def ti_attack(args):
+def fgsm_attack(args):
+    # TODO: run on all test examples.
     # Prepare dataset.
     train_dataset = MNIST(args.data_path, train=True, download=True,
                           transform=transforms.Compose([
@@ -264,7 +230,8 @@ def ti_attack(args):
 
     # kNN training
     train_images, train_labels = loader2numpy(train_loader)
-    model = torch.load('/home/tenger/research/metric-learning/siamese-triplet/triplet.pt')
+    model = TripletNet(EmbeddingNet())
+    model.load_state_dict(torch.load('/home/tenger/research/metric-learning/siamese-triplet/triplet.pt'))
     ti = TripletInfer(model, train_images, train_labels)
 
     # Load test dataset.
@@ -354,8 +321,16 @@ def ti_attack(args):
 
 
 def main(args):
-    ti_attack(args)
-    # normal_attack(args)
+    # fgsm_attack(args)
+    train_dataset = ImageFolder(root=os.path.join(params.data_root, 'train'),
+                                transform=transforms.Compose([
+                                    transforms.Resize(256),
+                                    transforms.CenterCrop(224),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize((params.mean,), (params.std,))])
+                                )
+
+    defense(train_dataset, '/home/tenger/research/metric-learning/siamese-triplet/uaec-pre.pth')
 
 if __name__ == "__main__":
     main(parse_arguments(sys.argv[1:]))

@@ -51,9 +51,10 @@ def train_epoch(train_loader, model, loss_fn, optimizer, cuda, log_interval, met
             data = (data,)
         if cuda:
             data = tuple(d.cuda() for d in data)
-            if target is not None:
+            # if target is not None:
+            #     target = target.cuda()
+            if isinstance(target, torch.Tensor):
                 target = target.cuda()
-
 
         optimizer.zero_grad()
         outputs = model(*data)
@@ -102,7 +103,7 @@ def test_epoch(val_loader, model, loss_fn, cuda, metrics):
                 data = (data,)
             if cuda:
                 data = tuple(d.cuda() for d in data)
-                if target is not None:
+                if isinstance(target, torch.Tensor):
                     target = target.cuda()
 
             outputs = model(*data)
